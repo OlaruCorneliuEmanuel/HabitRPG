@@ -7,54 +7,21 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 
-const STORAGE_KEY = '@habit_rpg_data_v2'; // v2 ca să forțăm încărcarea datelor demo cu istoric
-const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-const COLORS = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEEAD', '#D4A5A5', '#9B59B6'];
-const ICONS = ['fitness', 'book', 'water', 'code-slash', 'bed', 'barbell', 'flame', 'cafe'];
-
-const getDateStr = (date = new Date()) => date.toISOString().split('T')[0];
-
-const calculateStreaks = (habit) => {
-  const { completedDates = [], frequency, selectedDays = [] } = habit;
-  const completedSet = new Set(completedDates);
-  const today = new Date();
-  
-  const isDueOnDate = (dateObj) => {
-    if (frequency === 'everyday') return true;
-    return selectedDays.includes(dateObj.getDay());
-  };
-
-  let currentStreak = 0;
-  let checkDate = new Date(today);
-  
-  for (let i = 0; i < 365; i++) {
-    const dateStr = getDateStr(checkDate);
-    const isToday = i === 0;
-    
-    if (isDueOnDate(checkDate)) {
-      if (completedSet.has(dateStr)) {
-        currentStreak++;
-      } else if (!isToday) {
-        break;
-      }
-    }
-    checkDate.setDate(checkDate.getDate() - 1);
-  }
-
-  const bestStreak = Math.max(habit.bestStreak || 0, currentStreak);
-  return { currentStreak, bestStreak };
-};
+import { STORAGE_KEY, WEEKDAYS, COLORS, ICONS, getDateStr } from './src/utils/constants';
+import { calculateStreaks, calculateYesterdayDamage } from './src/utils/streakHelper';
+import RPGHeader from './src/components/RPGHeader';
+import CalendarHeatmap from './src/components/CalendarHeatmap';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('Today');
   const [darkMode, setDarkMode] = useState(true);
-  
-  const [player, setPlayer] = useState({ hp: 100, maxHp: 100, xp: 40, level: 1 });
+
+  const [player, setPlayer] = useState({ hp: 90, maxHp: 100, xp: 60, level: 2 });
   const [habits, setHabits] = useState([]);
-  
+
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedHabit, setSelectedHabit] = useState(null);
-  
+
   const [editingId, setEditingId] = useState(null);
   const [name, setName] = useState('');
   const [icon, setIcon] = useState(ICONS[0]);
@@ -74,9 +41,10 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         setHabits(parsed.habits || []);
-        setPlayer(parsed.player || { hp: 100, maxHp: 100, xp: 40, level: 1 });
+        setPlayer(parsed.player || { hp: 90, maxHp: 100, xp: 60, level: 2 });
         setDarkMode(parsed.darkMode ?? true);
       } else {
+        // Date demo cu istoric bogat pe ultimele 2 săptămâni ca să arate bine Heatmap-ul
         const demoHabits = [
           {
             id: '1',
@@ -84,8 +52,12 @@ export default function App() {
             icon: 'code-slash',
             color: '#4ECDC4',
             frequency: 'everyday',
-            selectedDays: [0,1,2,3,4,5,6],
+            selectedDays: [0, 1, 2, 3, 4, 5, 6],
             completedDates: [
+              getDateStr(new Date(Date.now() - 86400000 * 10)),
+              getDateStr(new Date(Date.now() - 86400000 * 9)),
+              getDateStr(new Date(Date.now() - 86400000 * 6)),
+              getDateStr(new Date(Date.now() - 86400000 * 5)),
               getDateStr(new Date(Date.now() - 86400000 * 3)),
               getDateStr(new Date(Date.now() - 86400000 * 2)),
               getDateStr(new Date(Date.now() - 86400000 * 1)),
@@ -98,12 +70,28 @@ export default function App() {
             icon: 'barbell',
             color: '#FF6B6B',
             frequency: 'specific',
-            selectedDays: [1, 3, 4, 5],
+            selectedDays: [1, 3, 5],
             completedDates: [
+              getDateStr(new Date(Date.now() - 86400000 * 9)),
+              getDateStr(new Date(Date.now() - 86400000 * 7)),
               getDateStr(new Date(Date.now() - 86400000 * 4)),
               getDateStr(new Date(Date.now() - 86400000 * 2)),
             ],
             bestStreak: 5
+          },
+          {
+            id: '3',
+            name: '2L Hidratare',
+            icon: 'water',
+            color: '#45B7D1',
+            frequency: 'everyday',
+            selectedDays: [0, 1, 2, 3, 4, 5, 6],
+            completedDates: [
+              getDateStr(new Date(Date.now() - 86400000 * 5)),
+              getDateStr(new Date(Date.now() - 86400000 * 2)),
+              getDateStr(new Date(Date.now() - 86400000 * 1)),
+            ],
+            bestStreak: 3
           }
         ];
         setHabits(demoHabits);
@@ -146,13 +134,19 @@ export default function App() {
     setPlayer(prev => {
       let newXp = prev.xp + amount;
       let newLevel = prev.level;
-      if (newXp >= 100) { newLevel += 1; newXp -= 100; } 
+      if (newXp >= 100) { newLevel += 1; newXp -= 100; }
       else if (newXp < 0) {
-        if (newLevel > 1) { newLevel -= 1; newXp += 100; } 
+        if (newLevel > 1) { newLevel -= 1; newXp += 100; }
         else { newXp = 0; }
       }
       return { ...prev, xp: newXp, level: newLevel };
     });
+  };
+
+  // Aplică penalizarea de HP pentru zilele ratate (sau simulare pentru demo)
+  const applyMissedPenalty = () => {
+    const dmg = calculateYesterdayDamage(habits) || 10;
+    setPlayer(prev => ({ ...prev, hp: Math.max(0, prev.hp - dmg) }));
   };
 
   const openCreateModal = () => {
@@ -195,31 +189,7 @@ export default function App() {
     <SafeAreaView style={[styles.container, { backgroundColor: theme.bg }]}>
       <StatusBar barStyle={darkMode ? 'light-content' : 'dark-content'} />
 
-      <View style={[styles.rpgHeader, { backgroundColor: theme.card, borderBottomColor: theme.border }]}>
-        <View style={styles.rpgTopRow}>
-          <View style={styles.avatarBox}>
-            <Ionicons name="shield-half" size={32} color="#FFD700" />
-            <View style={{ marginLeft: 10 }}>
-              <Text style={[styles.levelText, { color: theme.text }]}>Lvl {player.level} Adventurer</Text>
-              <Text style={{ color: theme.subtext, fontSize: 12 }}>Offline-First RPG Tracker</Text>
-            </View>
-          </View>
-          <TouchableOpacity onPress={() => setDarkMode(!darkMode)} style={styles.themeBtn}>
-            <Ionicons name={darkMode ? 'sunny' : 'moon'} size={22} color={theme.text} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.barsContainer}>
-          <View style={styles.barRow}>
-            <Text style={[styles.barLabel, { color: '#FF6B6B' }]}>HP {player.hp}/{player.maxHp}</Text>
-            <View style={styles.barBg}><View style={[styles.barFill, { width: `${(player.hp / player.maxHp) * 100}%`, backgroundColor: '#FF6B6B' }]} /></View>
-          </View>
-          <View style={styles.barRow}>
-            <Text style={[styles.barLabel, { color: '#4ECDC4' }]}>XP {player.xp}/100</Text>
-            <View style={styles.barBg}><View style={[styles.barFill, { width: `${player.xp}%`, backgroundColor: '#4ECDC4' }]} /></View>
-          </View>
-        </View>
-      </View>
+      <RPGHeader player={player} darkMode={darkMode} setDarkMode={setDarkMode} theme={theme} />
 
       <ScrollView style={styles.content}>
         {activeTab === 'Today' && (
@@ -281,21 +251,27 @@ export default function App() {
 
         {activeTab === 'Stats' && (
           <View>
-            <Text style={[styles.sectionTitle, { color: theme.text }]}>Consistency</Text>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>Consistency & Analytics</Text>
+            <CalendarHeatmap habits={habits} theme={theme} />
+
             {habits.map(habit => {
               const { currentStreak, bestStreak } = calculateStreaks(habit);
               const totalDone = habit.completedDates.length;
-              const rate = Math.min(100, Math.round((totalDone / 7) * 100));
+              const rate = Math.min(100, Math.round((totalDone / 14) * 100));
               return (
                 <View key={habit.id} style={[styles.statCard, { backgroundColor: theme.card }]}>
                   <View style={styles.rowBetween}>
                     <Text style={[styles.habitName, { color: theme.text }]}>{habit.name}</Text>
-                    <Text style={{ color: habit.color, fontWeight: 'bold' }}>{rate}% (7d rate)</Text>
+                    <Text style={{ color: habit.color, fontWeight: 'bold' }}>{rate}% (14d rate)</Text>
                   </View>
                   <Text style={{ color: theme.subtext, fontSize: 12, marginTop: 6 }}>Total: {totalDone} | Streak: {currentStreak} | Best: {bestStreak}</Text>
                 </View>
               );
             })}
+
+            <TouchableOpacity style={styles.damageBtn} onPress={applyMissedPenalty}>
+              <Text style={{ color: '#FF6B6B', fontWeight: 'bold' }}>Test Missed-Day Penalty (-HP)</Text>
+            </TouchableOpacity>
           </View>
         )}
       </ScrollView>
@@ -305,19 +281,15 @@ export default function App() {
           <View style={[styles.modalBox, { backgroundColor: theme.card }]}>
             <Text style={[styles.sectionTitle, { color: theme.text }]}>{editingId ? 'Edit Habit' : 'Create Habit'}</Text>
             <TextInput placeholder="Habit name" placeholderTextColor={theme.subtext} value={name} onChangeText={setName} style={[styles.input, { color: theme.text, borderColor: theme.border }]} />
-            
             <Text style={[styles.label, { color: theme.subtext }]}>Color</Text>
             <View style={styles.selectorRow}>{COLORS.map(c => <TouchableOpacity key={c} onPress={() => setColor(c)} style={[styles.colorCircle, { backgroundColor: c, borderWidth: color === c ? 3 : 0, borderColor: theme.text }]} />)}</View>
-            
             <Text style={[styles.label, { color: theme.subtext }]}>Icon</Text>
             <View style={styles.selectorRow}>{ICONS.map(ic => <TouchableOpacity key={ic} onPress={() => setIcon(ic)} style={[styles.iconBox, { backgroundColor: icon === ic ? color : 'transparent' }]}><Ionicons name={ic} size={20} color={icon === ic ? '#FFF' : theme.text} /></TouchableOpacity>)}</View>
-            
             <Text style={[styles.label, { color: theme.subtext }]}>Frequency</Text>
             <View style={styles.selectorRow}>
               <TouchableOpacity style={[styles.freqBtn, frequency === 'everyday' && { backgroundColor: '#4ECDC4' }]} onPress={() => setFrequency('everyday')}><Text style={{ color: frequency === 'everyday' ? '#FFF' : theme.text }}>Every Day</Text></TouchableOpacity>
               <TouchableOpacity style={[styles.freqBtn, frequency === 'specific' && { backgroundColor: '#4ECDC4' }]} onPress={() => setFrequency('specific')}><Text style={{ color: frequency === 'specific' ? '#FFF' : theme.text }}>Specific Days</Text></TouchableOpacity>
             </View>
-            
             {frequency === 'specific' && (
               <View style={styles.selectorRow}>
                 {WEEKDAYS.map((day, idx) => {
@@ -326,7 +298,6 @@ export default function App() {
                 })}
               </View>
             )}
-
             <View style={[styles.rowBetween, { marginTop: 20 }]}>
               <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.cancelBtn}><Text style={{ color: theme.subtext }}>Cancel</Text></TouchableOpacity>
               <TouchableOpacity onPress={saveHabit} style={styles.saveBtn}><Text style={{ color: '#FFF', fontWeight: 'bold' }}>Save</Text></TouchableOpacity>
@@ -366,15 +337,21 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 }, rpgHeader: { padding: 16, borderBottomWidth: 1 }, rpgTopRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  avatarBox: { flexDirection: 'row', alignItems: 'center' }, levelText: { fontSize: 18, fontWeight: 'bold' }, themeBtn: { padding: 6 }, barsContainer: { marginTop: 12 },
-  barRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 4 }, barLabel: { width: 85, fontSize: 12, fontWeight: 'bold' }, barBg: { flex: 1, height: 8, backgroundColor: '#333', borderRadius: 4, overflow: 'hidden' },
-  barFill: { height: '100%' }, content: { flex: 1, padding: 16 }, sectionTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 12 }, rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  habitCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 10, marginBottom: 10, borderLeftWidth: 5 }, habitLeft: { flexDirection: 'row', alignItems: 'center' },
-  habitName: { fontSize: 16, fontWeight: '600' }, addBtn: { flexDirection: 'row', backgroundColor: '#4ECDC4', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
-  statCard: { padding: 16, borderRadius: 10, marginBottom: 10 }, bottomNav: { flexDirection: 'row', height: 60, borderTopWidth: 1 }, navItem: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 }, modalBox: { borderRadius: 12, padding: 20 }, input: { borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 12 },
-  label: { fontSize: 13, fontWeight: '600', marginTop: 8, marginBottom: 6 }, selectorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }, colorCircle: { width: 28, height: 28, borderRadius: 14 },
-  iconBox: { padding: 8, borderRadius: 8 }, freqBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: '#555' }, dayBtn: { padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#555' },
+  container: { flex: 1 }, content: { flex: 1, padding: 16 },
+  sectionTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 12 },
+  rowBetween: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  habitCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderRadius: 10, marginBottom: 10, borderLeftWidth: 5 },
+  habitLeft: { flexDirection: 'row', alignItems: 'center' }, habitName: { fontSize: 16, fontWeight: '600' },
+  addBtn: { flexDirection: 'row', backgroundColor: '#4ECDC4', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8, alignItems: 'center' },
+  statCard: { padding: 16, borderRadius: 10, marginBottom: 10 },
+  damageBtn: { padding: 12, borderRadius: 8, borderWidth: 1, borderColor: '#FF6B6B', alignItems: 'center', marginTop: 10, marginBottom: 20 },
+  bottomNav: { flexDirection: 'row', height: 60, borderTopWidth: 1 }, navItem: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'center', padding: 20 },
+  modalBox: { borderRadius: 12, padding: 20 }, input: { borderWidth: 1, borderRadius: 8, padding: 10, marginBottom: 12 },
+  label: { fontSize: 13, fontWeight: '600', marginTop: 8, marginBottom: 6 },
+  selectorRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 },
+  colorCircle: { width: 28, height: 28, borderRadius: 14 }, iconBox: { padding: 8, borderRadius: 8 },
+  freqBtn: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 6, borderWidth: 1, borderColor: '#555' },
+  dayBtn: { padding: 8, borderRadius: 6, borderWidth: 1, borderColor: '#555' },
   cancelBtn: { padding: 10 }, saveBtn: { backgroundColor: '#4ECDC4', paddingHorizontal: 20, paddingVertical: 10, borderRadius: 8 }
 });
