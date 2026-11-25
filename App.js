@@ -144,9 +144,27 @@ export default function App() {
   };
 
   // Aplică penalizarea de HP pentru zilele ratate (sau simulare pentru demo)
+  // Aplică penalizarea de HP; dacă ajunge la 0, declanșează Respawn (Soft Reset)
   const applyMissedPenalty = () => {
     const dmg = calculateYesterdayDamage(habits) || 10;
-    setPlayer(prev => ({ ...prev, hp: Math.max(0, prev.hp - dmg) }));
+    setPlayer(prev => {
+      const nextHp = prev.hp - dmg;
+      if (nextHp <= 0) {
+        const msg = 'You fainted! Lost 1 Level and current XP. HP restored to 100.';
+        if (typeof window !== 'undefined' && window.alert) {
+          window.alert(msg);
+        } else {
+          Alert.alert('Character Fainted 💀', msg);
+        }
+        return {
+          ...prev,
+          hp: prev.maxHp,
+          xp: 0,
+          level: Math.max(1, prev.level - 1),
+        };
+      }
+      return { ...prev, hp: nextHp };
+    });
   };
 
   const openCreateModal = () => {
